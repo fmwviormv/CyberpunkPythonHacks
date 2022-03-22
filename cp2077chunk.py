@@ -24,16 +24,19 @@ class ChunkMeta(type):
         return cls
 
     def __call__(cls, *args, **kwargs):
-        if len(args) != 1 or kwargs:
-            res = bytearray.__new__(cls)
-            bytearray.__init__(res, cls.EMPTY)
-            res.__init__(*args, **kwargs)
+        if (
+            len(args) == 1
+            and not kwargs
+            and isinstance(args[0], (cls, bytes, bytearray))
+        ):
+            res = args[0]
+            if not isinstance(res, cls):
+                stream = BytesIO(res)
+                res = cls.read(stream)
+                if stream.read(1):
+                    raise ValueError
             return res
-        stream = BytesIO(args[0])
-        res = cls.read(stream)
-        if stream.read(1):
-            raise ValueError
-        return res
+        return cls.__new__(cls, *args, **kwargs)
 
 
 class Chunk(bytearray, metaclass=ChunkMeta):
@@ -42,6 +45,12 @@ class Chunk(bytearray, metaclass=ChunkMeta):
     def __init__(self, **kwargs):
         for name, value in kwargs.items():
             setattr(self, name, value)
+
+    def __new__(cls, *args, **kwargs):
+        res = bytearray.__new__(cls)
+        bytearray.__init__(res, cls.EMPTY)
+        res.__init__(*args, **kwargs)
+        return res
 
     @property
     def is_ok(self):
@@ -140,7 +149,7 @@ ChunkInfo = namedtuple(
 )
 
 
-class ChunkTableChunk(Chunk):
+class DataChunkTableChunk(Chunk):
     EMPTY = b"FZLC" + bytes(4)
     STRUCT = Struct("<III")
     VALID_CAPACITY = 0x100, 0x400
@@ -189,7 +198,8 @@ class ChunkTableChunk(Chunk):
         if len(value) > self.capacity:
             raise ValueError
         value = pack32(len(value)) + b"".join(value)
-        self[len(self.MAGIC) :] = value
+        mlen = len(self.MAGIC)
+        self[mlen : mlen + len(value)] = value
 
     def check_data(self, mlen):
         return self.capacity in self.VALID_CAPACITY
@@ -216,13 +226,33 @@ class DataChunk(Chunk):
         name = type(self).__name__
         return "%s(data=...%d byte(s)...)" % (name, self.uncomp_len)
 
+    def __new__(cls, *args, **kwargs):
+        if cls is __class__:
+            return LZ4DataChunk(*args, **kwargs)
+        return super().__new__(cls, *args, **kwargs)
+
+    @classmethod
+    def read(cls, stream, size=None):
+        if size is None:
+            return super().read(stream)
+        read = stream.read
+        magic = read(4)
+        match = __class__._BY_MAGIC.get(magic)
+        if match is None or not issubclass(match, cls):
+            raise TypeError("Invalid magic")
+        res = match()
+        res[len(magic) :] = read(size - 4)
+        if len(res) != size:
+            raise Exception
+        return res
+
 
 class LZ4DataChunk(DataChunk):
     EMPTY = b"4ZLX" + bytes(4)
 
     @property
     def comp_len(self):
-        return len(self) - len(self.EMPTY)
+        return len(self)
 
     @property
     def uncomp_len(self):
@@ -260,7 +290,7 @@ class LZ4DataChunk(DataChunk):
         res = bytearray(pack32(length))
         if length >= 15:
             length -= 15
-            res.append(0xf0)
+            res.append(0xF0)
             res.extend((length // 255) * b"\xff")
             res.append(length % 255)
         elif length:
@@ -369,15 +399,18 @@ class NodeTableChunk(Chunk):
     def info(self, value):
         magiclen = len(self.MAGIC)
         struct_fmt = self.STRUCT_FMT
-        packed_int = self.packed_int
+        pack_int = self.pack_int
         res = []
         n = (1 << 32) - 1
         for item in value:
             namlen = len(item.name)
             struct = Struct(struct_fmt % namlen)
             item = [n if i is None else i for i in item]
-            res.append(packed_int(-namlen) + struct.pack(*item))
-        self[magiclen : -4] = packed_int(len(res)) + b"".join(res)
+            res.append(pack_int(-namlen) + struct.pack(*item))
+        count = self.read_packed_int(self.reader)
+        if self.unpack_int(count) != len(res):
+            count = pack_int(len(res))
+        self[magiclen:-4] = count + b"".join(res)
 
     @property
     def offset(self):

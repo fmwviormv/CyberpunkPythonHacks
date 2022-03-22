@@ -163,7 +163,8 @@ class DatamineVirtuosoFixer(Window):
         right.rowconfigure(0, weight=1)
         right.columnconfigure(0, weight=1)
         right.columnconfigure(1, weight=1)
-        self.savefile_detailbox(right, 0, 0, columnspan=2)
+        dfrm = self.savefile_detailbox(right, 0, 0, columnspan=2)
+        self.ro_label_entry(dfrm, "failedShardDrops:", "f_shard_drops")
         self.btn_load = Button(
             right, text="Load File", command=self.load_file
         )
@@ -184,15 +185,43 @@ class DatamineVirtuosoFixer(Window):
         self.btn_load.state([enable])
         self.btn_fix.state(["disabled"])
         self.update_savefile_summary(summary)
+        self.vars("f_shard_drops", "load to find")
 
     def load_file(self):
         self.btn_load.state(["disabled"])
         self._savefile = None
         if self.savefile is None:
             self.btn_load.state(["!disabled"])
+            self.vars("f_shard_drops", "failed to load :-(")
         else:
-            self.btn_fix.state(["!disabled"])
+            try:
+                nodes = self.savefile.nodes
+                self.node = nodes.ScriptableSystemsContainer
+                self.config = self.node.__enter__()
+                res = self.config.DataTrackingSystem.failedShardDrops
+            except Exception:
+                self.vars("f_shard_drops", "failed to locate data :-(")
+                raise
+            if res:
+                self.vars("f_shard_drops", res)
+                self.btn_fix.state(["!disabled"])
+            else:
+                self.vars("f_shard_drops", "0 ; no need to fix")
 
     def fix_file(self):
         self.btn_load.state(["disabled"])
         self.btn_fix.state(["disabled"])
+        try:
+            self.config.DataTrackingSystem.failedShardDrops = 0
+            self.node.__exit__(None, None, None)
+        except Exception:
+            self.vars("f_shard_drops", "failed to change field :-(")
+            del self.config, self.node
+            raise
+        del self.config, self.node
+        try:
+            self.savefile.save()
+        except Exception:
+            self.vars("f_shard_drops", "could not save file :-(")
+            raise
+        self.vars("f_shard_drops", "0 ; file has been changed :-)")
