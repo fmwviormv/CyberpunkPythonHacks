@@ -334,6 +334,7 @@ class SaveFile:
             offset += item.comp_len
         self._data_chunks.info = info
         self._nodes_info.info = self.nodes_info
+        self._nodes_info.offset = offset
         with (path / self.TMP_NAME).open("wb") as f:
             f.write(self.header)
             f.write(self._data_chunks)
